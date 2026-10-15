@@ -2,7 +2,10 @@
 
 A free stream overlay for VALORANT streamers. It shows your **health and shield as animated pixel-art hearts** on your OBS stream, so viewers can see every hit you take.
 
-<!-- DEMO VIDEO: drag Hpoverlay.mp4 here when editing this file on GitHub -->
+
+
+https://github.com/user-attachments/assets/a45b8168-c927-4b97-92bf-43fd23dc9314
+
 
 - ❤️ **10 hearts = 100 HP**, with half hearts
 - 🛡️ **Light / Heavy shield** shown as a row of shields above the hearts
