@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HP Hearts Loader</title>
+<style>html, body { margin: 0; background: transparent; }</style>
+</head>
+<body>
+<script>
+// هذي الصفحة تحطها في OBS كـ Local file.
+// تحاول توصل لسكربت hp_reader كل ثانيتين، وأول ما يشتغل تفتح صفحة القلوب.
+// كذا ما يهم تشغّل OBS أول ولا السكربت أول، وما تحتاج تسوي Refresh.
+
+const SCALE = 3;     // حجم القلوب (غيّره هنا لو تبيها أكبر أو أصغر)
+const target = `http://localhost:8766/overlay.html?scale=${SCALE}`;
+
+function tryLoad() {
+  fetch(target, { mode: "no-cors", cache: "no-store" })
+    .then(() => location.replace(target))          // السكربت شغال: افتح القلوب
+    .catch(() => setTimeout(tryLoad, 2000));       // مو شغال: جرّب بعد ثانيتين
+}
+tryLoad();
+</script>
+</body>
+</html>

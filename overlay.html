@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HP Hearts Overlay</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  #wrap { padding: calc(4px * var(--s)); transition: opacity .4s; }
+  #wrap.hidden { opacity: 0; }
+  #row, #shields { display: flex; gap: calc(2px * var(--s)); }
+  #shields { margin-bottom: calc(2px * var(--s)); min-height: calc(9px * var(--s)); }
+  .shield { width: calc(10px * var(--s)); height: calc(9px * var(--s)); position: relative; }
+  .shield svg { width: 80%; height: 100%; margin: 0 auto; display: block; shape-rendering: crispEdges; }
+  .shield.gone { display: none; }
+  .shield.gold { width: calc(10px * var(--s)); height: calc(8px * var(--s)); margin-top: var(--s); }
+  .shield.gold svg { width: 100%; animation: shimmer 1.6s ease-in-out infinite; }
+  .shield.gold.lost svg { animation: blink .6s steps(1) 3; }
+  @keyframes shimmer { 50% { filter: brightness(1.25); } }
+  #shields.hit { animation: hit .35s steps(6); }
+  .shield.lost svg { animation: blink .6s steps(1) 3; }
+  .shield.gain { animation: pop .3s ease-out; }
+  .heart { width: calc(10px * var(--s)); height: calc(8px * var(--s)); position: relative; }
+  .heart svg { width: 100%; height: 100%; display: block; shape-rendering: crispEdges; }
+
+  /* اهتزاز عند الضرر */
+  #row.hit { animation: hit .35s steps(6); }
+  @keyframes hit {
+    0% { transform: translate(0, 0); }  20% { transform: translate(-3px, 1px); }
+    40% { transform: translate(3px, -1px); } 60% { transform: translate(-2px, 0); }
+    80% { transform: translate(2px, 1px); } 100% { transform: translate(0, 0); }
+  }
+  /* القلوب اللي راحت تومض أبيض */
+  .heart.lost svg { animation: blink .6s steps(1) 3; }
+  @keyframes blink { 50% { filter: brightness(3) saturate(0); } }
+  /* لما يرجع HP */
+  .heart.gain { animation: pop .3s ease-out; }
+  @keyframes pop { 50% { transform: scale(1.3); } }
+</style>
+</head>
+<body>
+<div id="dbg" style="display:none;font:14px monospace;color:#0f0;background:#000a;padding:2px 6px;position:fixed;right:0;bottom:0"></div>
+<div id="wrap" class="hidden">
+  <div id="shields"></div>
+  <div id="row"></div>
+</div>
+
+<script>
+// ===== الإعدادات (تقدر تغيرها من رابط الصفحة: overlay.html?scale=4&port=8765) =====
+const params = new URLSearchParams(location.search);
+const SCALE = Number(params.get("scale") || 3);   // حجم القلوب
+const PORT = params.get("port") || 8765;
+const DEBUG = params.has("debug");          // overlay.html?debug  -> يطلع الأرقام اللي توصله
+const dbg = document.getElementById("dbg");
+if (DEBUG) { dbg.style.display = "block"; dbg.textContent = "v5 | waiting..."; }
+const HEARTS = 10;            // 100 HP = 10 قلوب
+const HP_PER_HALF = 5;        // كل نص قلب = 5 HP
+const LOW_HP = 30;            // من 30 وتحت تبدأ القلوب ترجف (نفس ما يصير الرقم أحمر في اللعبة)
+const HIDE_AFTER_MS = 500;    // السكربت أصلًا يصبر 1.5 ثانية قبل ما يقول "مافيه رقم"، فهنا نخفي بسرعة
+
+document.documentElement.style.setProperty("--s", SCALE);
+
+// ===== تصميم القلب (pixel art) =====
+// K = إطار، R = أحمر، W = لمعة، D = ظل
+const SPRITE = [
+  ".KKK..KKK.",
+  "KRWRKKRRRK",
+  "KWRRRRRRDK",
+  "KRRRRRRRDK",
+  ".KRRRRRDK.",
+  "..KRRRDK..",
+  "...KRDK...",
+  "....KK....",
+];
+const FULL  = { K: "#2b0b0b", R: "#e3262f", W: "#ffd0d0", D: "#9c111a" };
+const EMPTY = { K: "#2b0b0b", R: "#4a1f22", W: "#5c2a2d", D: "#3b1719" };
+
+// state: 2 = كامل، 1 = نص، 0 = فاضي
+function heartSVG(state, full = FULL, empty = EMPTY) {
+  let rects = "";
+  SPRITE.forEach((line, y) => {
+    [...line].forEach((ch, x) => {
+      if (ch === ".") return;
+      const filled = state === 2 || (state === 1 && x < 5);
+      const color = ch === "K" ? full.K : (filled ? full : empty)[ch];
+      rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${color}"/>`;
+    });
+  });
+  return `<svg viewBox="0 0 10 8" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
+}
+
+const row = document.getElementById("row");
+const wrap = document.getElementById("wrap");
+const hearts = [];
+for (let i = 0; i < HEARTS; i++) {
+  const el = document.createElement("div");
+  el.className = "heart";
+  row.appendChild(el);
+  hearts.push({ el, state: -1 });
+}
+
+function halves(hp) {
+  // أي HP فوق الصفر يعطي على الأقل نص قلب
+  return Math.max(0, Math.min(HEARTS * 2, Math.ceil(hp / HP_PER_HALF)));
+}
+
+let lastHP = null, hideTimer = null;
+
+function render(hp) {
+  const h = halves(hp);
+  hearts.forEach((heart, i) => {
+    const state = Math.max(0, Math.min(2, h - i * 2));
+    if (state !== heart.state) {
+      const lost = heart.state !== -1 && state < heart.state;
+      const gained = heart.state !== -1 && state > heart.state;
+      heart.el.innerHTML = heartSVG(state);
+      heart.state = state;
+      heart.el.classList.remove("lost", "gain");
+      void heart.el.offsetWidth;           // يعيد تشغيل الأنيميشن
+      if (lost) heart.el.classList.add("lost");
+      if (gained) heart.el.classList.add("gain");
+    }
+  });
+}
+
+function onHP(hp) {
+  if (hp === null || hp === undefined) {
+    // الرقم مو ظاهر — ننتظر شوي قبل الإخفاء عشان القراءات الغلط اللحظية
+    if (!hideTimer) hideTimer = setTimeout(() => { wrap.classList.add("hidden"); maxShield = 0; }, HIDE_AFTER_MS);
+    return;
+  }
+  clearTimeout(hideTimer); hideTimer = null;
+  wrap.classList.remove("hidden");
+
+  if (lastHP !== null && hp < lastHP) {
+    row.classList.remove("hit"); void row.offsetWidth; row.classList.add("hit");
+  }
+  render(hp);
+  lastHP = hp;
+}
+
+// ===== الدروع =====
+// 50 شيلد = 10 دروع (نفس عرض صف القلوب)، 25 = 5 دروع (نص الصف)
+// كل درع = 5 شيلد، ونص درع = 2.5
+const SHIELD_ICONS = 10;
+const SHIELD_PER_ICON = 5;
+const SHIELD_SPRITE = [
+  "KKKKKKKK",
+  "KWCCCCDK",
+  "KWCCCCDK",
+  "KCCCCCDK",
+  "KCCCCCDK",
+  ".KCCCDK.",
+  ".KCCCDK.",
+  "..KCDK..",
+  "...KK...",
+];
+const SH_FULL  = { K: "#0b2a28", C: "#2fe0c4", W: "#c9fff6", D: "#14917f" };
+const SH_EMPTY = { K: "#0b2a28", C: "#1d3b38", W: "#24494a", D: "#183230" };
+
+function shieldSVG(state) {
+  let rects = "";
+  SHIELD_SPRITE.forEach((line, y) => {
+    [...line].forEach((ch, x) => {
+      if (ch === ".") return;
+      const filled = state === 2 || (state === 1 && x < 4);
+      const color = ch === "K" ? SH_FULL.K : (filled ? SH_FULL : SH_EMPTY)[ch];
+      rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${color}"/>`;
+    });
+  });
+  return `<svg viewBox="0 0 8 9" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
+}
+
+const shieldsRow = document.getElementById("shields");
+const shields = [];
+for (let i = 0; i < SHIELD_ICONS; i++) {
+  const el = document.createElement("div");
+  el.className = "shield gone";
+  shieldsRow.appendChild(el);
+  shields.push({ el, state: -1 });
+}
+
+// ===== الريجن شيلد = قلوب ذهبية (Overheal) =====
+const GOLD_FULL  = { K: "#3a2405", R: "#f7c325", W: "#fff6c2", D: "#c9871a" };
+const GOLD_EMPTY = { K: "#3a2405", R: "#4d3a12", W: "#5c4718", D: "#40300e" };
+
+let lastShield = 0, maxShield = 0, lastRegen = null;
+
+function renderShield(sh, regen = false) {
+  if (regen !== lastRegen) {
+    // تغير النوع: نعيد رسم كل الأيقونات بدون أنيميشن خسارة
+    shields.forEach(s => { s.state = -1; s.el.classList.toggle("gold", regen); });
+    lastRegen = regen;
+  }
+  // الشيلد الأساسي اللي شريته (25 أو 50) يحدد كم درع يبان
+  if (sh > maxShield || sh === 0) maxShield = sh <= 25 && sh > 0 ? 25 : sh > 25 ? 50 : 0;
+  const visible = Math.ceil(maxShield / SHIELD_PER_ICON);
+  const h = Math.ceil(sh / (SHIELD_PER_ICON / 2));
+  if (sh < lastShield) {
+    shieldsRow.classList.remove("hit"); void shieldsRow.offsetWidth; shieldsRow.classList.add("hit");
+  }
+  shields.forEach((s, i) => {
+    s.el.classList.toggle("gone", i >= visible);
+    const state = Math.max(0, Math.min(2, h - i * 2));
+    if (state !== s.state) {
+      const lost = s.state !== -1 && state < s.state;
+      const gained = s.state !== -1 && state > s.state;
+      s.el.innerHTML = regen ? heartSVG(state, GOLD_FULL, GOLD_EMPTY) : shieldSVG(state);
+      s.el.classList.remove("lost", "gain"); void s.el.offsetWidth;
+      if (lost) s.el.classList.add("lost");
+      if (gained) s.el.classList.add("gain");
+      s.state = state;
+    }
+  });
+  lastShield = sh;
+}
+
+// ===== رجفة الصحة القليلة =====
+setInterval(() => {
+  const low = lastHP !== null && lastHP > 0 && lastHP <= LOW_HP;
+  hearts.forEach(h => {
+    h.el.style.transform = low
+      ? `translateY(${Math.round(Math.random() * 2 - 1) * SCALE}px)`
+      : "";
+  });
+}, 100);
+
+// ===== الاتصال بالسكربت =====
+function connect() {
+  const ws = new WebSocket(`ws://localhost:${PORT}`);
+  ws.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (DEBUG) dbg.textContent = `v5 | HP ${d.hp} | Shield ${d.shield}${d.regen ? " regen" : ""}`;
+      if (d.hp !== null && d.hp !== undefined) renderShield(d.shield || 0, !!d.regen);
+      onHP(d.hp);
+    } catch {}
+  };
+  ws.onclose = () => {
+    onHP(null);                               // السكربت طفى: نخفي القلوب بدل ما تتجمد على آخر قيمة
+    setTimeout(connect, 2000);                // ويحاول يرجع يتصل
+  };
+  ws.onerror = () => ws.close();
+}
+connect();
+</script>
+</body>
+</html>
